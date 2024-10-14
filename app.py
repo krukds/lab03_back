@@ -33,7 +33,7 @@ def generate_iv(length):
 
 @app.post("/encrypt-file/")
 async def encrypt_file_endpoint(file: UploadFile = File(...), password: str = Form(...)):
-    blocksize = 64
+    blocksize = 128
     rounds = 8
     key = generate_key(password)
     iv = generate_iv(blocksize // 8)
@@ -56,7 +56,7 @@ async def encrypt_file_endpoint(file: UploadFile = File(...), password: str = Fo
 
 @app.post("/decrypt-file/")
 async def decrypt_file_endpoint(file: UploadFile = File(...), password: str = Form(...)):
-    blocksize = 64
+    blocksize = 128
     rounds = 8
     key = generate_key(password)
 
@@ -81,7 +81,7 @@ async def decrypt_file_endpoint(file: UploadFile = File(...), password: str = Fo
 
 @app.post("/encrypt-string/")
 async def encrypt_string_endpoint(data: str = Form(...), password: str = Form(...)):
-    blocksize = 64
+    blocksize = 128
     rounds = 8
     key = generate_key(password)
     iv = generate_iv(blocksize // 8)
@@ -92,7 +92,7 @@ async def encrypt_string_endpoint(data: str = Form(...), password: str = Form(..
 
 @app.post("/decrypt-string/")
 async def decrypt_string_endpoint(data: str = Form(...), password: str = Form(...)):
-    blocksize = 64
+    blocksize = 128
     rounds = 8
     key = generate_key(password)
 

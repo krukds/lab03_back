@@ -23,7 +23,8 @@ def _rotate_right(val, r_bits, max_bits):
     r_bits = r_bits % max_bits
     return ((val >> r_bits) | (val << (max_bits - r_bits))) & (2 ** max_bits - 1)
 
-def _expand_key(key, wordsize, rounds):
+def _expand_key(key, blocksize, rounds):
+    wordsize = blocksize // 2
     def _align_key(key, align_val):
         while len(key) % align_val:
             key += b'\x00'
@@ -64,12 +65,18 @@ def _expand_key(key, wordsize, rounds):
 
     return S
 
-def _encrypt_block(data, expanded_key, blocksize, rounds, iv):
+
+def _encrypt_block(data, expanded_key, blocksize, rounds, prev_cipher_block=None):
     w = blocksize // 2
     b = blocksize // 8
 
-    A = int.from_bytes(data[:b // 2], byteorder='little') ^ int.from_bytes(iv, byteorder='little')
-    B = int.from_bytes(data[b // 2:], byteorder='little') ^ int.from_bytes(iv, byteorder='little')
+    # Використовуємо prev_cipher_block тільки якщо він не None (для CBC)
+    if prev_cipher_block:
+        A = int.from_bytes(data[:b // 2], byteorder='little') ^ int.from_bytes(prev_cipher_block[:b // 2], byteorder='little')
+        B = int.from_bytes(data[b // 2:], byteorder='little') ^ int.from_bytes(prev_cipher_block[b // 2:], byteorder='little')
+    else:
+        A = int.from_bytes(data[:b // 2], byteorder='little')
+        B = int.from_bytes(data[b // 2:], byteorder='little')
 
     A = (A + expanded_key[0]) % (2 ** w)
     B = (B + expanded_key[1]) % (2 ** w)
@@ -80,7 +87,8 @@ def _encrypt_block(data, expanded_key, blocksize, rounds, iv):
 
     return A.to_bytes(b // 2, byteorder='little') + B.to_bytes(b // 2, byteorder='little')
 
-def _decrypt_block(data, expanded_key, blocksize, rounds, iv):
+
+def _decrypt_block(data, expanded_key, blocksize, rounds, prev_cipher_block=None):
     w = blocksize // 2
     b = blocksize // 8
 
@@ -94,72 +102,92 @@ def _decrypt_block(data, expanded_key, blocksize, rounds, iv):
     B = (B - expanded_key[1]) % (2 ** w)
     A = (A - expanded_key[0]) % (2 ** w)
 
-    A ^= int.from_bytes(iv, byteorder='little')
-    B ^= int.from_bytes(iv, byteorder='little')
-
-    # Переконайтеся, що значення A та B в межах допустимого діапазону
-    A = A % (2 ** w)
-    B = B % (2 ** w)
+    # Використовуємо prev_cipher_block тільки якщо він не None (для CBC)
+    if prev_cipher_block:
+        A ^= int.from_bytes(prev_cipher_block[:b // 2], byteorder='little')
+        B ^= int.from_bytes(prev_cipher_block[b // 2:], byteorder='little')
 
     return A.to_bytes(b // 2, byteorder='little') + B.to_bytes(b // 2, byteorder='little')
 
 
+def encrypt_ecb_block(data, key, blocksize, rounds):
+    expanded_key = _expand_key(key, blocksize, rounds)
+    # Передаємо тільки необхідні аргументи
+    encrypted_block = _encrypt_block(data, expanded_key, blocksize, rounds, prev_cipher_block=None)
+    return encrypted_block
+
+
+def decrypt_ecb_block(data, key, blocksize, rounds):
+    expanded_key = _expand_key(key, blocksize, rounds)
+    # Передаємо тільки необхідні аргументи
+    decrypted_block = _decrypt_block(data, expanded_key, blocksize, rounds, prev_cipher_block=None)
+    return decrypted_block
+
 def pad(data, blocksize):
     padding_length = blocksize - (len(data) % blocksize)
-    return data + bytes([0] * padding_length)
+    # Додаємо байти, рівні кількості доданих байтів
+    return data + bytes([padding_length] * padding_length)
 
 def unpad(data):
-    return data.rstrip(b'\x00')
+    # Останній байт вказує, скільки байтів було додано
+    padding_length = data[-1]
+    return data[:-padding_length]
 
 def encrypt_file(infile, outfile, key, blocksize, rounds, iv, file_extension):
     expanded_key = _expand_key(key, blocksize, rounds)
 
-    # Записуємо IV
-    outfile.write(iv)
+    # Шифруємо IV в режимі ECB перед записом
+    encrypted_iv = encrypt_ecb_block(iv, key, blocksize, rounds)
+
+    # Записуємо зашифрований IV
+    outfile.write(encrypted_iv)
 
     # Записуємо розмір розширення файлу (1 байт) і саме розширення
     outfile.write(len(file_extension).to_bytes(1, byteorder='little'))
     outfile.write(file_extension.encode())
 
-    # Записуємо розмір оригінального файлу
-    infile.seek(0, os.SEEK_END)
-    original_size = infile.tell()
-    infile.seek(0)
-    outfile.write(original_size.to_bytes(8, byteorder='little'))  # 8 байтів для збереження розміру файлу
-
     chunk = infile.read(blocksize // 8)
+    prev_cipher_block = iv  # Ініціалізація попереднього блоку як IV
+
     while chunk:
+        # Паддінг для кожного блоку
         chunk = pad(chunk, blocksize // 8)
-        encrypted_chunk = _encrypt_block(chunk, expanded_key, blocksize, rounds, iv)
+        encrypted_chunk = _encrypt_block(chunk, expanded_key, blocksize, rounds, prev_cipher_block)
         outfile.write(encrypted_chunk)
+        prev_cipher_block = encrypted_chunk  # Оновлюємо попередній блок
         chunk = infile.read(blocksize // 8)
+
 
 def decrypt_file(infile, outfile, key, blocksize, rounds):
     expanded_key = _expand_key(key, blocksize, rounds)
 
-    # Читаємо IV
-    iv = infile.read(blocksize // 8)
+    # Читаємо зашифрований IV
+    encrypted_iv = infile.read(blocksize // 8)
+
+    # Розшифровуємо IV в режимі ECB
+    iv = decrypt_ecb_block(encrypted_iv, key, blocksize, rounds)
 
     # Читаємо розмір розширення і саме розширення файлу
     extension_length = int.from_bytes(infile.read(1), byteorder='little')
     file_extension = infile.read(extension_length).decode()
 
-    # Читаємо оригінальний розмір файлу
-    original_size = int.from_bytes(infile.read(8), byteorder='little')
-
     chunk = infile.read(blocksize // 8)
+    prev_cipher_block = iv  # Ініціалізація як IV
     decrypted_data = bytearray()
 
     while chunk:
-        decrypted_chunk = _decrypt_block(chunk, expanded_key, blocksize, rounds, iv)
+        decrypted_chunk = _decrypt_block(chunk, expanded_key, blocksize, rounds, prev_cipher_block)
         decrypted_data.extend(decrypted_chunk)
+        prev_cipher_block = chunk  # Оновлюємо попередній зашифрований блок
         chunk = infile.read(blocksize // 8)
 
-    # Обрізаємо зайві байти до оригінального розміру файлу
-    decrypted_data = decrypted_data[:original_size]
+    # Видаляємо паддінг після розшифрування
+    decrypted_data = unpad(decrypted_data)
     outfile.write(decrypted_data)
 
     return file_extension
+
+
 def encrypt_string(data, key, blocksize, rounds, iv):
     expanded_key = _expand_key(key, blocksize, rounds)
     padded_data = pad(data, blocksize // 8)
@@ -171,10 +199,12 @@ def encrypt_string(data, key, blocksize, rounds, iv):
         encrypted_chunk = _encrypt_block(chunk, expanded_key, blocksize, rounds, iv)
         encrypted_data.extend(encrypted_chunk)
 
-    return iv + encrypted_data  # Повертаємо IV разом із зашифрованими даними
+    encrypted_iv = encrypt_ecb_block(iv, key, blocksize, rounds)
+    return encrypted_iv + encrypted_data  # Повертаємо IV разом із зашифрованими даними
 
 def decrypt_string(encrypted_data, key, blocksize, rounds):
-    iv = encrypted_data[:blocksize // 8]  # Отримуємо IV
+    encrypted_iv = encrypted_data[:blocksize // 8]  # Отримуємо IV
+    iv = decrypt_ecb_block(encrypted_iv, key, blocksize, rounds)
     expanded_key = _expand_key(key, blocksize, rounds)
     decrypted_data = bytearray()
 
